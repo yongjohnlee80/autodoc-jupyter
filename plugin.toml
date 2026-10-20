@@ -11,8 +11,7 @@ calls    = ["file.open_path"]   # import opens the lab note it writes
 
 [dialog]
 modal      = false              # a card: the editor keeps the keys
-placements = ["right"]
-esc        = "hide"             # the kernels live on while the card is hidden
+placements = ["right"]           # Esc closes a card's panel; the plugin, and its kernels, run on
 
 [feed]
 document = true                 # the open note: its cells, the cursor and the selection

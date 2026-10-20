@@ -230,6 +230,13 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 		err = s.waitReady(ready)
 	}
 	s.up = err == nil
+	switch {
+	case err == nil:
+	case ctx.Err() != nil:
+		err = fmt.Errorf("the start was withdrawn: %w", ctx.Err())
+	case ready.Err() != nil: // the bound withdrew a dial still waiting: that is what failed
+		err = fmt.Errorf("not answering after %v", ReadyTimeout)
+	}
 	if err != nil {
 		err = s.why(spec, err) // before stop, whose kill would read as the kernel's own exit
 		s.stop()
