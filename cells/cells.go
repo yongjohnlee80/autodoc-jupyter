@@ -29,6 +29,8 @@ func (c Cell) Key() string { return lab.CellKey(c.Lang, c.Code) }
 // fenced code block, each with its language.
 type Note struct {
 	Kernel string
+	// Body is where the note's text starts after its front matter: 0 when it has none.
+	Body   int
 	fences []Cell
 }
 
@@ -41,7 +43,7 @@ func Read(text string) Note {
 		for c := node.FirstChild; c != nil; c = c.Next {
 			switch {
 			case c.Kind == markdown.KindFrontmatter:
-				n.Kernel = kernelOf(c.Literal)
+				n.Kernel, n.Body = kernelOf(c.Literal), c.Span.End
 			case c.Kind == markdown.KindCodeBlock && c.Fence != 0:
 				n.fences = append(n.fences, Cell{Lang: lab.FenceLang(string(c.Info)), Code: string(c.Literal), Start: c.Span.Start, End: c.Span.End})
 			default:

@@ -15,8 +15,8 @@ const note = "---\ntitle: Plan\nkernel: python3\n---\n\n# Plan\n\n```python\nx =
 // dropped; every other fence is content.
 func TestANotesCellsAreItsFencesInTheKernelsLanguage(t *testing.T) {
 	n := Read(note)
-	if n.Kernel != "python3" {
-		t.Errorf("kernel %q", n.Kernel)
+	if n.Kernel != "python3" || note[n.Body-3:n.Body] != "---" || !strings.HasPrefix(strings.TrimLeft(note[n.Body:], "\n"), "# Plan") {
+		t.Errorf("kernel %q, body from %q", n.Kernel, note[n.Body:min(n.Body+10, len(note))])
 	}
 	var codes []string
 	for _, c := range n.Cells("Python") {
