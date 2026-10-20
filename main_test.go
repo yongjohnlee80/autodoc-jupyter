@@ -332,6 +332,9 @@ func TestARealPythonCellKeepsAPlotAndADataFrame(t *testing.T) {
 		}
 	}
 	if spec == nil {
+		if os.Getenv("AUTODOC_JUPYTER_REQUIRE_KERNEL") != "" {
+			t.Fatal("no Python kernelspec, and AUTODOC_JUPYTER_REQUIRE_KERNEL says one is installed (CI)")
+		}
 		t.Skip("no Python kernelspec on this machine (ipykernel is not installed)")
 	}
 	c := newLab(t.TempDir())
