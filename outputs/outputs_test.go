@@ -168,3 +168,20 @@ func TestAnErrorWithoutATraceback(t *testing.T) {
 		t.Errorf("%q", f.Data)
 	}
 }
+
+// A run that died between its writes and its swap left hidden folders of its cell: the cell's next
+// Commit removes them, and another cell's stay.
+func TestCommitRemovesADeadRunsLeftovers(t *testing.T) {
+	out := t.TempDir()
+	for _, d := range []string{".k1.run-123", ".k1.old-456", ".k2.run-789"} {
+		if err := os.MkdirAll(filepath.Join(out, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Commit(filepath.Join(out, "k1"), []File{{".txt", []byte("1")}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := names(t, out); !slices.Equal(got, []string{".k2.run-789", "k1"}) {
+		t.Errorf("out/ holds %v", got)
+	}
+}

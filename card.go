@@ -36,6 +36,16 @@ const pandasSetup = "try:\n    import pandas as _autodoc_pd\n    _autodoc_pd.set
 // tablePage is how many rows of a DataFrame go in one message.
 const tablePage = 200
 
+// redrawEvery is how often the card is drawn at most: a run printing fast changes it far oftener.
+const redrawEvery = 30 * time.Millisecond
+
+// closeGrace is how long Close lets each kernel answer shutdown_request before killing it, all of
+// them at once, within the host's two seconds.
+const closeGrace = time.Second
+
+// errClosed is a start that ended because the card closed.
+var errClosed = errors.New("the plugin is closing")
+
 // labCard is the plugin: a card that runs the open lab note's cells in a Jupyter kernel, one kernel
 // per note, and keeps their outputs beside the note. A run goes on a goroutine of its own, so the
 // card still takes Interrupt while it runs.
@@ -45,28 +55,37 @@ type labCard struct {
 	specs   func() []kernel.Spec                                                       // kernel.Specs; a test's
 	start   func(context.Context, kernel.Spec, string, string) (*kernel.Client, error) // kernel.Start
 
-	mu      sync.Mutex
-	peer    host
-	w, h    int
-	theme   plugin.Theme
-	doc     plugin.Document
-	kernels map[string]*kernel.Client // by lab note path
-	chosen  map[string]string         // a note's kernel picked with Choose kernel…, by note path
-	running bool
-	status  string   // what the card says it is doing, or did last
-	log     []string // the last run's outputs as lines
-	picking []kernel.Spec
-	pick    int
-	tables  map[string]*outputs.Table
-	sent    map[string]int // rows of each table sent so far
-	tableN  int
-	runs    sync.WaitGroup
+	// life bounds every kernel start the card makes; Close ends it
+	life context.Context
+	end  context.CancelFunc
+
+	mu         sync.Mutex
+	closed     bool
+	pending    bool // a redraw is scheduled
+	peer       host
+	w, h       int
+	theme      plugin.Theme
+	doc        plugin.Document
+	kernels    map[string]*kernel.Client // by lab note path
+	chosen     map[string]string         // a note's kernel picked with Choose kernel…, by note path
+	running    bool
+	restarting bool
+	status     string   // what the card says it is doing, or did last
+	log        []string // the last run's outputs as lines
+	picking    []kernel.Spec
+	pick       int
+	tables     map[string]*outputs.Table
+	sent       map[string]int // rows of each table sent so far
+	tableN     int
+	runs       sync.WaitGroup
 }
 
 func newLab(connDir string) *labCard {
-	return &labCard{connDir: connDir, specs: kernel.Specs, start: kernel.Start,
+	c := &labCard{connDir: connDir, specs: kernel.Specs, start: kernel.Start,
 		kernels: map[string]*kernel.Client{}, chosen: map[string]string{},
 		tables: map[string]*outputs.Table{}, sent: map[string]int{}, status: "ready"}
+	c.life, c.end = context.WithCancel(context.Background())
+	return c
 }
 
 func (c *labCard) Open(p *plugin.Peer, o plugin.Open) { c.open(p, o) }
@@ -75,21 +94,21 @@ func (c *labCard) open(p host, o plugin.Open) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.peer, c.w, c.h, c.theme = p, o.Width, o.Height, o.Theme
-	c.drawLocked()
+	c.redrawLocked()
 }
 
 func (c *labCard) Resize(w, h int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.w, c.h = w, h
-	c.drawLocked()
+	c.redrawLocked()
 }
 
 func (c *labCard) Theme(t plugin.Theme) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.theme = t
-	c.drawLocked()
+	c.redrawLocked()
 }
 
 // Document is the open note, after each pause in editing, and as it stood when a command was chosen.
@@ -97,20 +116,26 @@ func (c *labCard) Document(d plugin.Document) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.doc = d
-	c.drawLocked()
+	c.redrawLocked()
 }
 
-// Close stops every kernel; a run in progress returns with its kernel's exit.
+// Close stops every kernel within the host's two seconds: a start in flight ends at once, and the
+// kernels are asked to shut down all together, each killed after closeGrace. A run in progress
+// returns with its kernel's exit. A kernel this process started also exits with it (JPY_PARENT_PID).
 func (c *labCard) Close() {
 	c.mu.Lock()
+	c.closed = true
 	ks := c.kernels
 	c.kernels = map[string]*kernel.Client{}
 	c.mu.Unlock()
+	c.end()
+	var stopping sync.WaitGroup
 	for _, k := range ks {
-		k.Shutdown()
+		stopping.Add(1)
+		go func() { defer stopping.Done(); k.ShutdownWithin(closeGrace) }()
 	}
 	done := make(chan struct{})
-	go func() { c.runs.Wait(); close(done) }()
+	go func() { stopping.Wait(); c.runs.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(1500 * time.Millisecond): // the host waits two seconds
@@ -162,7 +187,7 @@ func (c *labCard) Key(k plugin.Key) {
 		case k.Key == "q":
 			c.picking = nil
 		}
-		c.drawLocked()
+		c.redrawLocked()
 		c.mu.Unlock()
 		return
 	}
@@ -177,7 +202,7 @@ func (c *labCard) say(s string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = s
-	c.drawLocked()
+	c.redrawLocked()
 }
 
 // note is the open note when it is a lab note the card can run, and its kernel's spec; otherwise
@@ -226,14 +251,14 @@ func (c *labCard) run(all bool) {
 	c.mu.Lock()
 	if c.running {
 		c.status = "a run is in progress: x interrupts it"
-		c.drawLocked()
+		c.redrawLocked()
 		c.mu.Unlock()
 		return
 	}
 	d, n, spec, err := c.noteLocked()
 	if err != nil {
 		c.status = err.Error()
-		c.drawLocked()
+		c.redrawLocked()
 		c.mu.Unlock()
 		return
 	}
@@ -254,7 +279,7 @@ func (c *labCard) run(all bool) {
 		cell, ok := n.At(spec.Language, d.CursorByte)
 		if !ok {
 			c.status = "the cursor is in no " + spec.Language + " cell"
-			c.drawLocked()
+			c.redrawLocked()
 			c.mu.Unlock()
 			return
 		}
@@ -262,13 +287,14 @@ func (c *labCard) run(all bool) {
 	}
 	if len(jobs) == 0 {
 		c.status = "the note has no " + spec.Language + " cells"
-		c.drawLocked()
+		c.redrawLocked()
 		c.mu.Unlock()
 		return
 	}
+	keep := n.Keys() // Run all keeps every fence's outputs, whichever kernel ran it
 	c.running, c.log = true, nil
 	c.runs.Add(1)
-	c.drawLocked()
+	c.redrawLocked()
 	c.mu.Unlock()
 
 	go func() {
@@ -276,7 +302,7 @@ func (c *labCard) run(all bool) {
 		defer func() {
 			c.mu.Lock()
 			c.running = false
-			c.drawLocked()
+			c.redrawLocked()
 			c.mu.Unlock()
 		}()
 		k, err := c.kernelFor(d.Path, spec)
@@ -311,10 +337,6 @@ func (c *labCard) run(all bool) {
 			}
 		}
 		if all {
-			keep := make([]string, len(jobs))
-			for i, j := range jobs {
-				keep[i] = j.cell.Key()
-			}
 			if err := outputs.Prune(outDir, keep); err != nil {
 				c.say("removing outputs no cell has: " + err.Error())
 				return
@@ -342,7 +364,7 @@ func plural(n int, s string) string {
 }
 
 // kernelFor is the note's running kernel of spec, started (in the note's folder) when it has none
-// or one of another spec.
+// or one of another spec. A Close while it starts ends the start, and the kernel is never kept.
 func (c *labCard) kernelFor(path string, spec kernel.Spec) (*kernel.Client, error) {
 	c.mu.Lock()
 	k := c.kernels[path]
@@ -354,16 +376,24 @@ func (c *labCard) kernelFor(path string, spec kernel.Spec) (*kernel.Client, erro
 		k.Shutdown()
 	}
 	c.say("starting " + display(spec) + "…")
-	ctx, cancel := context.WithTimeout(context.Background(), kernel.ReadyTimeout)
+	ctx, cancel := context.WithTimeout(c.life, kernel.ReadyTimeout)
 	defer cancel()
 	k, err := c.start(ctx, spec, c.connDir, filepath.Dir(path))
 	if err != nil {
+		if c.life.Err() != nil {
+			return nil, errClosed
+		}
 		return nil, err
 	}
 	if spec.Language == "python" {
 		_, _ = k.Execute(ctx, pandasSetup, true, nil)
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		k.ShutdownWithin(0)
+		return nil, errClosed
+	}
 	c.kernels[path] = k
 	c.mu.Unlock()
 	return k, nil
@@ -398,7 +428,7 @@ func (c *labCard) show(m kernel.Message) {
 	if over := len(c.log) - 500; over > 0 {
 		c.log = c.log[over:]
 	}
-	c.drawLocked()
+	c.redrawLocked()
 }
 
 // sendTable shows a DataFrame in AutoDoc's table panel: its first page, the rest on fetch.
@@ -450,20 +480,30 @@ func (c *labCard) interrupt() {
 	}
 }
 
-// restart starts the note's kernel afresh: its variables are gone.
+// restart starts the note's kernel afresh: its variables are gone. One restart at a time.
 func (c *labCard) restart() {
 	c.mu.Lock()
 	k := c.kernels[c.doc.Path]
-	c.mu.Unlock()
-	if k == nil {
-		c.say("no kernel runs for this note: r starts one")
+	switch {
+	case k == nil:
+		c.status = "no kernel runs for this note: r starts one"
+	case c.restarting:
+		c.status = "a restart is in progress"
+	}
+	if k == nil || c.restarting {
+		c.redrawLocked()
+		c.mu.Unlock()
 		return
 	}
-	c.say("restarting " + display(k.Spec) + "…")
+	c.restarting = true
+	c.status = "restarting " + display(k.Spec) + "…"
+	c.redrawLocked()
+	c.mu.Unlock()
 	c.runs.Add(1)
 	go func() {
 		defer c.runs.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), kernel.ReadyTimeout)
+		defer func() { c.mu.Lock(); c.restarting = false; c.mu.Unlock() }()
+		ctx, cancel := context.WithTimeout(c.life, kernel.ReadyTimeout)
 		defer cancel()
 		if err := k.Restart(ctx); err != nil {
 			c.say("restart: " + err.Error())
@@ -486,7 +526,7 @@ func (c *labCard) choose() {
 	} else {
 		c.picking, c.pick = specs, 0
 	}
-	c.drawLocked()
+	c.redrawLocked()
 }
 
 // export writes the note as an .ipynb beside it, never over one.
@@ -522,11 +562,32 @@ func (c *labCard) importNotebook(p string) {
 	}
 }
 
-// drawLocked sends the card's frame: the note and its kernel, the status, the last run's outputs (or
-// the kernel chooser), and the keys.
-func (c *labCard) drawLocked() {
-	if c.peer == nil || c.w <= 0 || c.h <= 0 {
+// redrawLocked has the card drawn soon: at most once per redrawEvery, the frame built under the
+// lock and sent outside it, so a run printing fast neither floods the host nor holds the card.
+func (c *labCard) redrawLocked() {
+	if c.pending || c.peer == nil {
 		return
+	}
+	c.pending = true
+	time.AfterFunc(redrawEvery, c.flush)
+}
+
+// flush draws the card now.
+func (c *labCard) flush() {
+	c.mu.Lock()
+	c.pending = false
+	f, peer := c.frameLocked(), c.peer
+	c.mu.Unlock()
+	if f != nil {
+		_ = peer.Frame(f)
+	}
+}
+
+// frameLocked is the card's frame: the note and its kernel, the status, the last run's outputs (or
+// the kernel chooser), and the keys; nil before the card has a size.
+func (c *labCard) frameLocked() *plugin.Frame {
+	if c.peer == nil || c.w <= 0 || c.h <= 0 {
+		return nil
 	}
 	f := plugin.NewFrame(c.w, c.h)
 	accent := plugin.Style{FG: c.theme.Colors["document.cursor"], Bold: true}
@@ -574,7 +635,7 @@ func (c *labCard) drawLocked() {
 		}
 	}
 	f.Text(0, c.h-1, "r run · a all · x interrupt · s restart · k kernel · e export", muted)
-	_ = c.peer.Frame(f)
+	return f
 }
 
 func orEmpty(sep, s string) string {

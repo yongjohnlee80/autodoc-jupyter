@@ -75,14 +75,25 @@ func kernelOf(front []byte) string {
 }
 
 // Cells are the note's fences in lang (a kernelspec's language), in order: its cells. Any other
-// fence (mermaid, csv, vega-lite, text) is content, and never runs.
+// fence (mermaid, csv, vega-lite, text) is content, and never runs. lang is read as a fence's is
+// (its first word, lower-cased), so a kernelspec's "Wolfram Language" finds ```wolfram fences.
 func (n Note) Cells(lang string) []Cell {
-	lang = strings.ToLower(lang)
+	lang = lab.FenceLang(lang)
 	var out []Cell
 	for _, c := range n.fences {
 		if c.Lang == lang && lang != "" {
 			out = append(out, c)
 		}
+	}
+	return out
+}
+
+// Keys are the keys of every fence in the note, whatever its language: the output folders a note
+// may own, which a prune keeps whichever kernel ran them.
+func (n Note) Keys() []string {
+	out := make([]string, len(n.fences))
+	for i, c := range n.fences {
+		out[i] = c.Key()
 	}
 	return out
 }

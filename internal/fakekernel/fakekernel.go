@@ -11,8 +11,13 @@
 //	vl      a display_data of a Vega-Lite v5 chart
 //	set     remembers x; get prints it, or errors when the kernel was restarted
 //	sleep   says "sleeping\n", then waits 30s for an interrupt
+//	flood   prints FloodLines lines, each a stream message of its own, as fast as it can
 //
 // Any other code prints itself to stdout.
+//
+// With FAKEKERNEL_PIDS set to a folder, each fake kernel started writes its pid there as a file, so
+// a test sees every process it caused and can check that each is gone; the file holds the
+// JPY_PARENT_PID it was given.
 package fakekernel
 
 import (
@@ -22,6 +27,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -42,7 +49,30 @@ const (
 	Message Mode = "fake-kernel-messages"
 	// Dies exits at once, saying on stderr that ipykernel is missing.
 	Dies Mode = "fake-kernel-dies"
+	// Slow is Signal, binding its ports only after SlowStart: a start a test can race.
+	Slow Mode = "fake-kernel-slow"
 )
+
+// SlowStart is how long a Slow kernel waits before it answers.
+const SlowStart = 1500 * time.Millisecond
+
+// FloodLines is how many lines "flood" prints.
+const FloodLines = 3000
+
+// Pids are the pids of the fake kernels started under the folder FAKEKERNEL_PIDS named.
+func Pids(dir string) []int {
+	entries, _ := os.ReadDir(dir)
+	var out []int
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			out = append(out, pid)
+		}
+	}
+	return out
+}
+
+// Gone reports whether no process pid runs: it has exited and been reaped.
+func Gone(pid int) bool { return syscall.Kill(pid, 0) == syscall.ESRCH }
 
 // PNG is the image "png" displays.
 var PNG = []byte("\x89PNG\r\n\x1a\nfake")
@@ -56,7 +86,14 @@ func Dispatch() {
 	if len(os.Args) != 3 {
 		return
 	}
+	if dir := os.Getenv("FAKEKERNEL_PIDS"); dir != "" {
+		// the file holds what the kernel was told of its parent, as ipykernel reads it
+		_ = os.WriteFile(filepath.Join(dir, strconv.Itoa(os.Getpid())), []byte(os.Getenv("JPY_PARENT_PID")), 0o644)
+	}
 	switch Mode(os.Args[1]) {
+	case Slow:
+		time.Sleep(SlowStart)
+		os.Exit(run(os.Args[2], false))
 	case Signal, Message:
 		os.Exit(run(os.Args[2], Mode(os.Args[1]) == Message))
 	case Dies:
@@ -200,6 +237,10 @@ func run(connFile string, byMessage bool) int {
 				case code == "vl":
 					publish(m.Header, "display_data", map[string]any{"data": map[string]any{
 						"application/vnd.vegalite.v5+json": map[string]any{"mark": "bar"}, "text/plain": "<VegaLite>"}, "metadata": map[string]any{}})
+				case code == "flood":
+					for i := range FloodLines {
+						publish(m.Header, "stream", map[string]any{"name": "stdout", "text": strconv.Itoa(i) + "\n"})
+					}
 				case code == "set":
 					x = "1"
 				case code == "get":

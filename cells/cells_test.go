@@ -82,3 +82,14 @@ func TestANoteWithoutAKernel(t *testing.T) {
 		}
 	}
 }
+
+// A kernelspec's language is read as a fence's: "Wolfram Language" finds ```wolfram fences.
+func TestAMultiWordLanguageFindsItsFences(t *testing.T) {
+	n := Read("```wolfram\n1 + 1\n```\n")
+	if cs := n.Cells("Wolfram Language"); len(cs) != 1 || cs[0].Code != "1 + 1\n" {
+		t.Errorf("cells %+v", cs)
+	}
+	if keys := n.Keys(); len(keys) != 1 || keys[0] != lab.CellKey("wolfram", "1 + 1") {
+		t.Errorf("keys %q", keys)
+	}
+}
