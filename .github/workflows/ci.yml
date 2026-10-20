@@ -1,6 +1,7 @@
 # Every push and pull request: vet, a build, and the tests under the race detector. The kernel's and
 # the card's cells run a fake kernel written in Go; with ipykernel, pandas and matplotlib installed
-# here, the real-kernel cells run too (they skip, saying why, where Python's kernel is missing).
+# here, the real-kernel cells run too: AUTODOC_JUPYTER_REQUIRE_KERNEL makes a missing kernel a failure,
+# where elsewhere they skip, saying why.
 name: ci
 
 on:
@@ -27,4 +28,7 @@ jobs:
       - name: build
         run: go build -trimpath -o bin/autodoc-jupyter .
       - name: test
-        run: go test -race -count=1 ./...
+        # the kernel installed above: a real-kernel cell that finds none fails here, never skips
+        env:
+          AUTODOC_JUPYTER_REQUIRE_KERNEL: "1"
+        run: go test -race -count=1 -v ./... 2>&1 | tee test.log; test "${PIPESTATUS[0]}" -eq 0
