@@ -233,11 +233,21 @@ func (r *Run) Files() []File { return slices.Clone(r.files) }
 
 // Commit makes files the cell folder dir's whole content, NN.<ext> in order: written to a hidden
 // folder beside it, then swapped in, so a reader sees the older run's outputs or this one's, never
-// a mix, and none of an older run's extra files survives. No files remove the folder.
+// a mix, and none of an older run's extra files survives; for the moment between the two renames it
+// sees none. No files remove the folder. A run is one at a time per card, so a hidden folder of
+// this cell's that is left from before is a dead run's, and goes.
 func Commit(dir string, files []File) error {
 	parent, base := filepath.Split(filepath.Clean(dir))
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
+	}
+	// what a run that died between its writes and its swap left of this cell: never anyone's now
+	for _, pattern := range []string{"." + base + ".run-*", "." + base + ".old-*"} {
+		if left, err := filepath.Glob(filepath.Join(parent, pattern)); err == nil {
+			for _, l := range left {
+				os.RemoveAll(l)
+			}
+		}
 	}
 	tmp, err := os.MkdirTemp(parent, "."+base+".run-")
 	if err != nil {

@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -284,5 +286,121 @@ func TestARealIPyKernel(t *testing.T) {
 	}
 	if _, r := run(t, c, "x"); r.Status != "error" || r.EName != "NameError" {
 		t.Errorf("x after the restart: %+v", r)
+	}
+}
+
+// gone waits for every pid in pids to have exited: a kernel process left running is a leak.
+func gone(t *testing.T, pids []int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for _, pid := range pids {
+		for !fakekernel.Gone(pid) {
+			if time.Now().After(deadline) {
+				t.Fatalf("kernel process %d still runs (of %v)", pid, pids)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// Restarts that overlap (s pressed twice) are one: no kernel they started is left running but the
+// one the client keeps, and Shutdown ends that one. (Review of #1, P2 1.)
+func TestOverlappingRestartsLeaveOneKernel(t *testing.T) {
+	pids := t.TempDir()
+	t.Setenv("FAKEKERNEL_PIDS", pids)
+	c := startFake(t, "")
+	errs := make(chan error, 2)
+	var restarts sync.WaitGroup
+	for range 2 {
+		restarts.Add(1)
+		go func() {
+			defer restarts.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			errs <- c.Restart(ctx)
+		}()
+	}
+	restarts.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := PidOf(c)
+	var others []int
+	for _, pid := range fakekernel.Pids(pids) {
+		if pid != live {
+			others = append(others, pid)
+		}
+	}
+	gone(t, others)
+	if _, r := run(t, c, "print"); r.Status != "ok" {
+		t.Errorf("the kept kernel: %+v", r)
+	}
+	c.Shutdown()
+	gone(t, []int{live})
+}
+
+// A Shutdown during a restart's start ends the start at once: it returns within its grace, the
+// restart installs nothing, and no kernel process is left. (Review of #1, P2 2.)
+func TestShutdownDuringARestartEndsItsStart(t *testing.T) {
+	pids := t.TempDir()
+	t.Setenv("FAKEKERNEL_PIDS", pids)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := Start(ctx, fakeSpec(t, fakekernel.Slow), t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Shutdown)
+	restarted := make(chan error, 1)
+	go func() { restarted <- c.Restart(context.Background()) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(fakekernel.Pids(pids)) < 2 { // the restart's kernel has started, and binds after SlowStart
+		if time.Now().After(deadline) {
+			t.Fatal("the restart never started a kernel")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	began := time.Now()
+	c.ShutdownWithin(time.Second)
+	if took := time.Since(began); took > time.Second+500*time.Millisecond {
+		t.Errorf("Shutdown took %v: it waited out the restart's start", took)
+	}
+	if err := <-restarted; !errors.Is(err, ErrClosed) {
+		t.Errorf("the restart: %v, want ErrClosed", err)
+	}
+	if c.Alive() {
+		t.Error("a kernel is installed after Shutdown")
+	}
+	gone(t, fakekernel.Pids(pids))
+}
+
+// A run's output is never dropped for a slow reader: every line of a flood arrives, and the run
+// ends (its final idle is not lost either). (Review of #1, P2 3.)
+func TestAFloodOfOutputIsNeverDropped(t *testing.T) {
+	c := startFake(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	n := 0
+	r, err := c.Execute(ctx, "flood", false, func(Message) { n++; time.Sleep(50 * time.Microsecond) })
+	if err != nil || r.Status != "ok" {
+		t.Fatalf("the flood's run: %+v %v", r, err)
+	}
+	if n != fakekernel.FloodLines {
+		t.Errorf("%d of %d lines arrived", n, fakekernel.FloodLines)
+	}
+}
+
+// A kernel is told its parent (JPY_PARENT_PID), so ipykernel exits with this process, though its
+// process group is its own and a host's kill of the plugin does not reach it.
+func TestAKernelIsToldItsParent(t *testing.T) {
+	pids := t.TempDir()
+	t.Setenv("FAKEKERNEL_PIDS", pids)
+	c := startFake(t, "")
+	parent, err := os.ReadFile(filepath.Join(pids, strconv.Itoa(PidOf(c))))
+	if err != nil || string(parent) != strconv.Itoa(os.Getpid()) {
+		t.Errorf("JPY_PARENT_PID %q (%v), want this process, %d", parent, err, os.Getpid())
 	}
 }

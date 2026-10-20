@@ -99,6 +99,18 @@ func note(t *testing.T, c *labCard, name, text, at string) string {
 	return p
 }
 
+// shows waits until the card's frame holds want: frames are drawn soon after a change, not at once.
+func (r *recorder) shows(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(r.text(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the card never showed %q:\n%s", want, r.text())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // settled waits until the card's run has ended, and returns its status.
 func settled(t *testing.T, c *labCard) string {
 	t.Helper()
@@ -146,9 +158,8 @@ func TestRunKeepsACellsOutputsBesideTheNote(t *testing.T) {
 	if got := outputsOf(t, p, "print"); got["01.txt"] != "1\n" || len(got) != 1 {
 		t.Errorf("the cell's outputs %q", got)
 	}
-	if !strings.Contains(r.text(), "Fake") || !strings.Contains(r.text(), "plan.lab.md") {
-		t.Errorf("the card:\n%s", r.text())
-	}
+	r.shows(t, "Fake")
+	r.shows(t, "plan.lab.md")
 	if _, err := os.Stat(filepath.Join(filepath.Dir(p), "plan.lab", "out", lab.CellKey("mermaid", "print"))); !os.IsNotExist(err) {
 		t.Error("the mermaid fence ran")
 	}
@@ -257,9 +268,7 @@ func TestASelectionRunsWithoutKeepingOutputs(t *testing.T) {
 	c.Document(plugin.Document{Path: p, Text: text, CursorByte: at, SelectionBytes: [][2]int{{at, at + len("selected")}}})
 	c.Command("run")
 	settled(t, c)
-	if !strings.Contains(r.text(), "selected") {
-		t.Errorf("the card:\n%s", r.text())
-	}
+	r.shows(t, "selected")
 	if _, err := os.Stat(filepath.Join(filepath.Dir(p), "sel.lab")); !os.IsNotExist(err) {
 		t.Error("a selection's outputs were kept")
 	}
@@ -369,4 +378,76 @@ func TestARealPythonCellKeepsAPlotAndADataFrame(t *testing.T) {
 		t.Errorf("tables %+v", r.tables)
 	}
 	r.mu.Unlock()
+}
+
+// Close during a kernel's start keeps the host's two seconds: the start ends, the run says so, and
+// no kernel process is left, though the start would have finished after Close. (Review of #1, P2 2.)
+func TestCloseDuringAKernelsStartKeepsTheHostsGrace(t *testing.T) {
+	pids := t.TempDir()
+	t.Setenv("FAKEKERNEL_PIDS", pids)
+	c, _ := card(t, fakekernel.Slow)
+	note(t, c, "slow.lab.md", "```fake\nprint\n```\n", "print")
+	c.Command("run")
+	deadline := time.Now().Add(10 * time.Second)
+	for len(fakekernel.Pids(pids)) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("no kernel was started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	began := time.Now()
+	c.Close()
+	if took := time.Since(began); took >= time.Second {
+		t.Errorf("Close took %v: the start in flight was waited out, not ended (the host's grace is 2s)", took)
+	}
+	if s := settled(t, c); !strings.Contains(s, "closing") {
+		t.Errorf("status %q", s)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for _, pid := range fakekernel.Pids(pids) {
+		for !fakekernel.Gone(pid) {
+			if time.Now().After(deadline) {
+				t.Fatalf("kernel process %d still runs after Close", pid)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// One restart at a time: s pressed while a restart runs says so and starts nothing more.
+func TestASecondRestartWaitsForTheFirst(t *testing.T) {
+	c, r := card(t, fakekernel.Signal)
+	note(t, c, "r.lab.md", "```fake\nprint\n```\n", "print")
+	c.Command("run")
+	settled(t, c)
+	c.Command("restart")
+	c.Command("restart")
+	c.mu.Lock()
+	status := c.status
+	c.mu.Unlock()
+	if status != "a restart is in progress" {
+		t.Errorf("the second restart: %q", status)
+	}
+	r.shows(t, "restarted")
+}
+
+// Run all prunes only outputs no fence has: a cell of another language (run by another kernel)
+// keeps its outputs.
+func TestRunAllKeepsAnotherLanguagesOutputs(t *testing.T) {
+	c, _ := card(t, fakekernel.Signal)
+	p := note(t, c, "two.lab.md", "```fake\nprint\n```\n\n```julia\nprintln(1)\n```\n", "# none")
+	other := filepath.Join(filepath.Dir(p), "two.lab", "out", lab.CellKey("julia", "println(1)"))
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "01.txt"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.Command("all")
+	if s := settled(t, c); !strings.Contains(s, "ran 1 cell") {
+		t.Fatalf("status %q", s)
+	}
+	if _, err := os.Stat(filepath.Join(other, "01.txt")); err != nil {
+		t.Errorf("the julia cell's outputs were pruned: %v", err)
+	}
 }

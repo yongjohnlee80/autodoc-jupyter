@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +23,14 @@ type Client struct {
 	Spec             Spec
 	connDir, workDir string
 
-	exec sync.Mutex // one Execute at a time; Restart waits for the one running after stopping its kernel
-	mu   sync.Mutex // guards s
-	s    *session
+	exec sync.Mutex // one Execute at a time; a Restart holds it while it starts the new kernel
+	mu   sync.Mutex // guards s and closed
+	s    *session   // nil while the kernel is down: a start that failed, until a Restart
+	// closed is a Shutdown: no session is installed after it, and life, which bounds every start
+	// the client makes, is cancelled by it
+	closed bool
+	life   context.Context
+	end    context.CancelFunc
 }
 
 // Reply is an execute_reply: its status ("ok", "error" or "aborted"), and for an error its name and
@@ -39,6 +45,12 @@ type Reply struct {
 // ErrClosed is a request of a kernel that was shut down.
 var ErrClosed = errors.New("kernel: shut down")
 
+// ErrDown is a request of a kernel whose last start failed: Restart starts it again.
+var ErrDown = errors.New("kernel: not running: restart it")
+
+// shutdownGrace is how long Shutdown lets the kernel answer shutdown_request before it kills it.
+const shutdownGrace = 3 * time.Second
+
 // ReadyTimeout bounds a kernel's start: its process up, and answering kernel_info on its shell while
 // its iopub is subscribed.
 var ReadyTimeout = 60 * time.Second
@@ -48,8 +60,10 @@ var ReadyTimeout = 60 * time.Second
 // ctx bounds the start only.
 func Start(ctx context.Context, s Spec, connDir, workDir string) (*Client, error) {
 	c := &Client{Spec: s, connDir: connDir, workDir: workDir}
+	c.life, c.end = context.WithCancel(context.Background())
 	sess, err := startSession(ctx, s, connDir, workDir)
 	if err != nil {
+		c.end()
 		return nil, err
 	}
 	c.s = sess
@@ -69,9 +83,9 @@ func (c *Client) cur() *session {
 func (c *Client) Execute(ctx context.Context, code string, silent bool, out func(Message)) (Reply, error) {
 	c.exec.Lock()
 	defer c.exec.Unlock()
-	s := c.cur()
-	if s == nil {
-		return Reply{}, ErrClosed
+	s, err := c.running()
+	if err != nil {
+		return Reply{}, err
 	}
 	return s.execute(ctx, code, silent, out)
 }
@@ -79,9 +93,9 @@ func (c *Client) Execute(ctx context.Context, code string, silent bool, out func
 // Interrupt stops the code running: an interrupt_request on control for a kernel whose spec asks
 // for messages, else SIGINT to its process group.
 func (c *Client) Interrupt() error {
-	s := c.cur()
-	if s == nil {
-		return ErrClosed
+	s, err := c.running()
+	if err != nil {
+		return err
 	}
 	if c.Spec.InterruptMode == "message" {
 		return s.send(s.control, "interrupt_request", nil)
@@ -89,27 +103,66 @@ func (c *Client) Interrupt() error {
 	return interrupt(s.cmd)
 }
 
+// running is the session a request goes to: ErrClosed after Shutdown, ErrDown while no kernel runs.
+func (c *Client) running() (*session, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.closed:
+		return nil, ErrClosed
+	case c.s == nil:
+		return nil, ErrDown
+	}
+	return c.s, nil
+}
+
 // Restart stops the kernel and starts it again: a new process, its variables gone. A run in
-// progress returns with the kernel's exit.
+// progress returns with the kernel's exit. A kernel that is down (its last start failed) is started.
+// Restarts that overlap are one: the one that finds the kernel it stopped already replaced does
+// nothing more. Shutdown ends a restart's start, and no kernel is installed after it.
 func (c *Client) Restart(ctx context.Context) error {
-	if s := c.cur(); s != nil {
-		s.stop()
-	} else {
+	c.mu.Lock()
+	old, closed := c.s, c.closed
+	c.mu.Unlock()
+	if closed {
 		return ErrClosed
+	}
+	if old != nil {
+		old.stop(shutdownGrace) // ends a run in progress, which lets go of exec
 	}
 	c.exec.Lock()
 	defer c.exec.Unlock()
-	sess, err := startSession(ctx, c.Spec, c.connDir, c.workDir)
 	c.mu.Lock()
-	c.s = sess // nil when the start failed: the kernel is down, and Restart is the way back
+	replaced := c.s != old
+	closed = c.closed
 	c.mu.Unlock()
+	switch {
+	case closed:
+		return ErrClosed
+	case replaced:
+		return nil // an overlapping restart started the new kernel while this one waited
+	}
+	start, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(c.life, cancel) // Shutdown ends the start
+	defer stop()
+	sess, err := startSession(start, c.Spec, c.connDir, c.workDir)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		if sess != nil {
+			sess.stop(0)
+		}
+		return ErrClosed
+	}
+	c.s = sess // nil when the start failed: the kernel is down until the next Restart
 	return err
 }
 
 // Alive reports whether the kernel's process is running.
 func (c *Client) Alive() bool {
-	s := c.cur()
-	if s == nil {
+	s, err := c.running()
+	if err != nil {
 		return false
 	}
 	select {
@@ -120,17 +173,23 @@ func (c *Client) Alive() bool {
 	}
 }
 
-// Shutdown stops the kernel for good, and returns once a run in progress has.
-func (c *Client) Shutdown() {
+// Shutdown stops the kernel for good, and returns once a run in progress, or a restart's start,
+// has: it asks the kernel to shut down, and kills it after shutdownGrace.
+func (c *Client) Shutdown() { c.ShutdownWithin(shutdownGrace) }
+
+// ShutdownWithin is Shutdown, killing the kernel after grace: a host's own grace bounds a plugin's
+// close. A start in progress (a Restart's) is ended at once.
+func (c *Client) ShutdownWithin(grace time.Duration) {
 	c.mu.Lock()
 	s := c.s
-	c.s = nil
+	c.s, c.closed = nil, true
 	c.mu.Unlock()
+	c.end()
 	if s != nil {
-		s.stop()
+		s.stop(grace)
 	}
 	c.exec.Lock()
-	c.exec.Unlock() //nolint:staticcheck // waits for a run in progress to return
+	c.exec.Unlock() //nolint:staticcheck // waits for a run in progress, or a restart's start, to return
 }
 
 // session is one process of a kernel and the sockets connected to it.
@@ -176,7 +235,8 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 	argv := spec.argv(connFile)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = os.Environ()
+	// ipykernel exits when this process does (its parent poller), though its process group is its own
+	cmd.Env = append(os.Environ(), "JPY_PARENT_PID="+strconv.Itoa(os.Getpid()))
 	for k, v := range spec.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -239,7 +299,7 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 	}
 	if err != nil {
 		err = s.why(spec, err) // before stop, whose kill would read as the kernel's own exit
-		s.stop()
+		s.stop(0)
 		return nil, err
 	}
 	return s, nil
@@ -259,8 +319,9 @@ func (s *session) why(spec Spec, err error) error {
 	}
 }
 
-// read decodes each message sock receives into in, dropping one whose signature does not match;
-// a full in drops the message (no run is waiting for it). It returns when the socket is closed.
+// read decodes each message sock receives into in, dropping one whose signature does not match.
+// A full in holds the reader, and the socket's own buffer then holds the kernel: no output of a run
+// is lost to a slow reader of it. It returns when the socket is closed or the session stopped.
 func (s *session) read(sock zmq4.Socket, in chan Message) {
 	for {
 		raw, err := sock.Recv()
@@ -273,7 +334,8 @@ func (s *session) read(sock zmq4.Socket, in chan Message) {
 		}
 		select {
 		case in <- m:
-		default:
+		case <-s.ctx.Done():
+			return
 		}
 	}
 }
@@ -392,9 +454,9 @@ func (s *session) execute(ctx context.Context, code string, silent bool, out fun
 	return *reply, nil
 }
 
-// stop asks the kernel to shut down, kills its process group when it has not exited after a
-// moment, and closes the sockets and the connection file. Once only.
-func (s *session) stop() {
+// stop asks the kernel to shut down, kills its process group when it has not exited after grace,
+// and closes the sockets and the connection file. Once only.
+func (s *session) stop(grace time.Duration) {
 	s.stopOnce.Do(func() {
 		select {
 		case <-s.exited:
@@ -404,7 +466,7 @@ func (s *session) stop() {
 			}
 			select {
 			case <-s.exited:
-			case <-time.After(3 * time.Second):
+			case <-time.After(grace):
 				kill(s.cmd)
 				<-s.exited
 			}
