@@ -23,10 +23,13 @@ import (
 //	error   an error, and an error reply
 //	png     a display_data of a PNG, with its text/plain
 //	set     remembers x; get prints it, or errors when the kernel was restarted
-//	sleep   says "sleeping\n", then waits for an interrupt (SIGINT, or interrupt_request) for 30s
+//	sleep   says "sleeping\n", then waits 30s for an interrupt
+//
+// "fake-kernel" is interrupted by SIGINT alone, "fake-kernel-messages" by interrupt_request alone,
+// so a cell sees which way the client interrupted.
 func TestMain(m *testing.M) {
-	if len(os.Args) == 3 && os.Args[1] == "fake-kernel" {
-		os.Exit(fakeKernel(os.Args[2]))
+	if len(os.Args) == 3 && (os.Args[1] == "fake-kernel" || os.Args[1] == "fake-kernel-messages") {
+		os.Exit(fakeKernel(os.Args[2], os.Args[1] == "fake-kernel-messages"))
 	}
 	if len(os.Args) == 3 && os.Args[1] == "fake-kernel-dies" {
 		fmt.Fprintln(os.Stderr, "ModuleNotFoundError: No module named 'ipykernel'")
@@ -35,7 +38,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func fakeKernel(connFile string) int {
+func fakeKernel(connFile string, byMessage bool) int {
 	data, err := os.ReadFile(connFile)
 	if err != nil {
 		return 2
@@ -67,9 +70,12 @@ func fakeKernel(connFile string) int {
 
 	interrupts := make(chan struct{}, 1)
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT)
+	signal.Notify(sigs, syscall.SIGINT) // caught in both modes: by messages, a SIGINT does nothing
 	go func() {
 		for range sigs {
+			if byMessage {
+				continue
+			}
 			select {
 			case interrupts <- struct{}{}:
 			default:
@@ -89,9 +95,11 @@ func fakeKernel(connFile string) int {
 			}
 			switch m.Header.MsgType {
 			case "interrupt_request":
-				select {
-				case interrupts <- struct{}{}:
-				default:
+				if byMessage {
+					select {
+					case interrupts <- struct{}{}:
+					default:
+					}
 				}
 				send(control, m.Identities, m.Header, "interrupt_reply", map[string]any{"status": "ok"})
 			case "shutdown_request":
@@ -177,12 +185,17 @@ func fakeSpec(t *testing.T, mode, interruptMode string) Spec {
 	return Spec{Name: "fake", Argv: []string{exe, mode, "{connection_file}"}, Language: "fake", InterruptMode: interruptMode}
 }
 
-// startFake starts the fake kernel, shut down when the test ends.
+// startFake starts the fake kernel, shut down when the test ends: interrupted by interrupt_request
+// when interruptMode is "message", else by SIGINT.
 func startFake(t *testing.T, interruptMode string) *Client {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	c, err := Start(ctx, fakeSpec(t, "fake-kernel", interruptMode), t.TempDir(), t.TempDir())
+	mode := "fake-kernel"
+	if interruptMode == "message" {
+		mode = "fake-kernel-messages"
+	}
+	c, err := Start(ctx, fakeSpec(t, mode, interruptMode), t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
