@@ -135,7 +135,7 @@ func (c *Client) Shutdown() {
 
 // session is one process of a kernel and the sockets connected to it.
 type session struct {
-	sign     signer
+	sign     Codec
 	id       string
 	cmd      *exec.Cmd
 	exited   chan struct{} // closed once the process has exited
@@ -158,7 +158,7 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 	if err != nil {
 		return nil, err
 	}
-	key := newID()
+	key := NewID()
 	conn, err := json.Marshal(map[string]any{
 		"shell_port": ports[0], "iopub_port": ports[1], "stdin_port": ports[2], "control_port": ports[3], "hb_port": ports[4],
 		"ip": "127.0.0.1", "transport": "tcp", "key": key, "signature_scheme": "hmac-sha256", "kernel_name": spec.Name,
@@ -169,7 +169,7 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 	if err := os.MkdirAll(connDir, 0o700); err != nil {
 		return nil, err
 	}
-	connFile := filepath.Join(connDir, "kernel-"+newID()[:12]+".json")
+	connFile := filepath.Join(connDir, "kernel-"+NewID()[:12]+".json")
 	if err := os.WriteFile(connFile, conn, 0o600); err != nil {
 		return nil, err
 	}
@@ -180,7 +180,7 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 	for k, v := range spec.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	s := &session{sign: signer{key: []byte(key)}, id: newID(), cmd: cmd, exited: make(chan struct{}), stderr: &tail{max: 4096}, connFile: connFile}
+	s := &session{sign: Codec{Key: []byte(key)}, id: NewID(), cmd: cmd, exited: make(chan struct{}), stderr: &tail{max: 4096}, connFile: connFile}
 	cmd.Stderr = s.stderr
 	ownGroup(cmd)
 	if err := cmd.Start(); err != nil {
@@ -260,7 +260,7 @@ func (s *session) read(sock zmq4.Socket, in chan Message) {
 		if err != nil {
 			return
 		}
-		m, err := s.sign.decode(raw.Frames)
+		m, err := s.sign.Decode(raw.Frames)
 		if err != nil || in == nil {
 			continue
 		}
@@ -273,7 +273,7 @@ func (s *session) read(sock zmq4.Socket, in chan Message) {
 
 // sendHeader sends a request of msgType with content on sock, and returns its header.
 func (s *session) sendHeader(sock zmq4.Socket, msgType string, content any) (Header, error) {
-	h := newHeader(s.id, msgType)
+	h := NewHeader(s.id, msgType)
 	body, err := json.Marshal(content)
 	if err != nil {
 		return h, err
@@ -281,7 +281,7 @@ func (s *session) sendHeader(sock zmq4.Socket, msgType string, content any) (Hea
 	if content == nil {
 		body = []byte("{}")
 	}
-	frames, err := s.sign.encode(Message{Header: h, Content: body})
+	frames, err := s.sign.Encode(Message{Header: h, Content: body})
 	if err != nil {
 		return h, err
 	}

@@ -48,24 +48,24 @@ type Message struct {
 // dropped, never read.
 var ErrSignature = errors.New("kernel: a message's signature does not match")
 
-// signer signs and checks messages with a connection's key; an empty key signs nothing, as
-// Jupyter's does.
-type signer struct{ key []byte }
+// Codec signs and checks messages with a connection's key (HMAC-SHA256); an empty key signs nothing,
+// as Jupyter's does. The client speaks through one; so does a kernel written in Go, a test's.
+type Codec struct{ Key []byte }
 
-func (s signer) sign(parts ...[]byte) []byte {
-	if len(s.key) == 0 {
+func (s Codec) sign(parts ...[]byte) []byte {
+	if len(s.Key) == 0 {
 		return nil
 	}
-	mac := hmac.New(sha256.New, s.key)
+	mac := hmac.New(sha256.New, s.Key)
 	for _, p := range parts {
 		mac.Write(p)
 	}
 	return []byte(hex.EncodeToString(mac.Sum(nil)))
 }
 
-// encode is m as its wire frames: its identities, the delimiter, the signature, then header,
+// Encode is m as its wire frames: its identities, the delimiter, the signature, then header,
 // parent header, metadata and content as JSON, then the buffers.
-func (s signer) encode(m Message) ([][]byte, error) {
+func (s Codec) Encode(m Message) ([][]byte, error) {
 	header, err := json.Marshal(m.Header)
 	if err != nil {
 		return nil, err
@@ -92,8 +92,8 @@ func (s signer) encode(m Message) ([][]byte, error) {
 	return append(frames, m.Buffers...), nil
 }
 
-// decode reads a message from its wire frames, refusing one whose signature does not match.
-func (s signer) decode(frames [][]byte) (Message, error) {
+// Decode reads a message from its wire frames, refusing one whose signature does not match.
+func (s Codec) Decode(frames [][]byte) (Message, error) {
 	var m Message
 	at := -1
 	for i, f := range frames {
@@ -124,8 +124,8 @@ func (s signer) decode(frames [][]byte) (Message, error) {
 	return m, nil
 }
 
-// newID is a random message or session id: 32 hex digits.
-func newID() string {
+// NewID is a random message or session id: 32 hex digits.
+func NewID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic(err) // crypto/rand never fails on the platforms Go supports
@@ -133,10 +133,10 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// newHeader is a fresh header of msgType for session.
-func newHeader(session, msgType string) Header {
+// NewHeader is a fresh header of msgType for session.
+func NewHeader(session, msgType string) Header {
 	return Header{
-		MsgID:    newID(),
+		MsgID:    NewID(),
 		Session:  session,
 		Username: "autodoc",
 		Date:     time.Now().UTC().Format(time.RFC3339Nano),
