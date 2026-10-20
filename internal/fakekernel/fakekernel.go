@@ -175,9 +175,10 @@ func run(connFile string, byMessage bool) int {
 					count++
 				}
 				publish(m.Header, "execute_input", map[string]any{"code": req.Code, "execution_count": count})
-				status := "ok"
+				status, failed := "ok", map[string]any{}
 				fail := func(ename, evalue string) {
 					status = "error"
+					failed = map[string]any{"ename": ename, "evalue": evalue, "traceback": []string{}} // as ipykernel's reply has them
 					publish(m.Header, "error", map[string]any{"ename": ename, "evalue": evalue, "traceback": []string{"\x1b[0;31m" + ename + "\x1b[0m: " + evalue}})
 				}
 				select { // an interrupt for an earlier run is not this one's
@@ -217,7 +218,11 @@ func run(connFile string, byMessage bool) int {
 				default:
 					publish(m.Header, "stream", map[string]any{"name": "stdout", "text": code + "\n"})
 				}
-				send(shell, m.Identities, m.Header, "execute_reply", map[string]any{"status": status, "execution_count": count})
+				reply := map[string]any{"status": status, "execution_count": count}
+				for k, v := range failed {
+					reply[k] = v
+				}
+				send(shell, m.Identities, m.Header, "execute_reply", reply)
 			}
 			publish(m.Header, "status", map[string]any{"execution_state": "idle"})
 		}
