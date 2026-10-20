@@ -181,7 +181,7 @@ func (c *labCard) Key(k plugin.Key) {
 		case k.Key == "Down":
 			c.pick = min(c.pick+1, len(c.picking)-1)
 		case k.Key == "Enter":
-			c.chosen[c.doc.Path] = c.picking[c.pick].Name
+			c.chosen[c.doc.File()] = c.picking[c.pick].Name
 			c.status = "kernel: " + display(c.picking[c.pick]) + " (add kernel: " + c.picking[c.pick].Name + " to the note's front matter to keep it)"
 			c.picking = nil
 		case k.Key == "q":
@@ -205,21 +205,25 @@ func (c *labCard) say(s string) {
 	c.redrawLocked()
 }
 
-// note is the open note when it is a lab note the card can run, and its kernel's spec; otherwise
+// noteLocked is the open note when it is a lab note the card can run: the document, its file on
+// disk (where its kernel runs and its outputs are kept), its cells and its kernel's spec; otherwise
 // why not.
-func (c *labCard) noteLocked() (plugin.Document, cells.Note, kernel.Spec, error) {
+func (c *labCard) noteLocked() (plugin.Document, string, cells.Note, kernel.Spec, error) {
 	d := c.doc
+	file := d.File()
 	switch {
 	case d.Path == "":
-		return d, cells.Note{}, kernel.Spec{}, errors.New("no note is open")
+		return d, "", cells.Note{}, kernel.Spec{}, errors.New("no note is open")
 	case !lab.Is(d.Path):
-		return d, cells.Note{}, kernel.Spec{}, fmt.Errorf("%s is not a lab note: cells run in a %s note", filepath.Base(d.Path), lab.Ext)
+		return d, "", cells.Note{}, kernel.Spec{}, fmt.Errorf("%s is not a lab note: cells run in a %s note", filepath.Base(d.Path), lab.Ext)
 	case d.TooLarge:
-		return d, cells.Note{}, kernel.Spec{}, errors.New("the note is too large to be sent to the plugin")
+		return d, "", cells.Note{}, kernel.Spec{}, errors.New("the note is too large to be sent to the plugin")
+	case file == "":
+		return d, "", cells.Note{}, kernel.Spec{}, errors.New("AutoDoc did not say where the note's workspace is (a document's root): update AutoDoc")
 	}
 	n := cells.Read(d.Text)
-	spec, err := c.specLocked(d.Path, n)
-	return d, n, spec, err
+	spec, err := c.specLocked(file, n)
+	return d, file, n, spec, err
 }
 
 // specLocked is the note's kernel: the one picked in the card, else its front matter's, else the
@@ -255,7 +259,7 @@ func (c *labCard) run(all bool) {
 		c.mu.Unlock()
 		return
 	}
-	d, n, spec, err := c.noteLocked()
+	d, file, n, spec, err := c.noteLocked()
 	if err != nil {
 		c.status = err.Error()
 		c.redrawLocked()
@@ -305,12 +309,12 @@ func (c *labCard) run(all bool) {
 			c.redrawLocked()
 			c.mu.Unlock()
 		}()
-		k, err := c.kernelFor(d.Path, spec)
+		k, err := c.kernelFor(file, spec)
 		if err != nil {
 			c.say(err.Error())
 			return
 		}
-		outDir := filepath.Join(filepath.Dir(d.Path), filepath.FromSlash(lab.OutDir(d.Path)))
+		outDir := filepath.Join(filepath.Dir(file), filepath.FromSlash(lab.OutDir(file)))
 		for i, j := range jobs {
 			c.say(fmt.Sprintf("running %d of %d…", i+1, len(jobs)))
 			var r outputs.Run
@@ -469,7 +473,7 @@ func (c *labCard) TableClosed(id string) {
 // interrupt stops the open note's run.
 func (c *labCard) interrupt() {
 	c.mu.Lock()
-	k := c.kernels[c.doc.Path]
+	k := c.kernels[c.doc.File()]
 	c.mu.Unlock()
 	if k == nil {
 		c.say("no kernel runs for this note")
@@ -483,7 +487,7 @@ func (c *labCard) interrupt() {
 // restart starts the note's kernel afresh: its variables are gone. One restart at a time.
 func (c *labCard) restart() {
 	c.mu.Lock()
-	k := c.kernels[c.doc.Path]
+	k := c.kernels[c.doc.File()]
 	switch {
 	case k == nil:
 		c.status = "no kernel runs for this note: r starts one"
@@ -532,13 +536,13 @@ func (c *labCard) choose() {
 // export writes the note as an .ipynb beside it, never over one.
 func (c *labCard) export() {
 	c.mu.Lock()
-	d, _, spec, err := c.noteLocked()
+	_, file, _, spec, err := c.noteLocked()
 	c.mu.Unlock()
 	if err != nil {
 		c.say(err.Error())
 		return
 	}
-	out, err := ipynb.Export(d.Path, ipynb.Kernel{Name: spec.Name, DisplayName: display(spec), Language: spec.Language})
+	out, err := ipynb.Export(file, ipynb.Kernel{Name: spec.Name, DisplayName: display(spec), Language: spec.Language})
 	if err != nil {
 		c.say(err.Error())
 		return
@@ -598,7 +602,7 @@ func (c *labCard) frameLocked() *plugin.Frame {
 	}
 	x := f.Text(0, 0, "Jupyter", accent)
 	kname := ""
-	if k := c.kernels[c.doc.Path]; k != nil {
+	if k := c.kernels[c.doc.File()]; k != nil {
 		kname = display(k.Spec)
 		if !k.Alive() {
 			kname += " (stopped)"
