@@ -31,6 +31,7 @@ type recorder struct {
 	tables []plugin.TableOpen
 	rows   []string // "id more n"
 	calls  [][]string
+	onCall func(id string) // run as each call is made, outside the lock; nil: nothing
 }
 
 func (r *recorder) Frame(f *plugin.Frame) error { r.mu.Lock(); r.frame = f; r.mu.Unlock(); return nil }
@@ -49,7 +50,11 @@ func (r *recorder) RowsKinds(id string, rows [][]string, _ []string, more bool) 
 func (r *recorder) Call(id string, args ...string) (bool, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string{id}, args...))
+	on := r.onCall
 	r.mu.Unlock()
+	if on != nil {
+		on(id)
+	}
 	return true, nil
 }
 func (r *recorder) Notify(plugin.Notice) error { return nil }
@@ -481,5 +486,42 @@ func TestANoteIsFoundOnDiskThroughItsWorkspacesRoot(t *testing.T) {
 	c.mu.Unlock()
 	if !strings.Contains(status, "update AutoDoc") {
 		t.Errorf("a document without its root: %q", status)
+	}
+}
+
+// A run has AutoDoc draw the note again (view.redraw) once each cell's outputs are kept, the files
+// already on disk, and Run all once more after it removes the outputs no cell has: AutoDoc's
+// Rendered view keeps a cell's layout until it is told, the note's text unchanged.
+func TestARunRedrawsTheNoteOnceItsOutputsAreKept(t *testing.T) {
+	c, r := card(t, fakekernel.Signal)
+	var mu sync.Mutex
+	var kept []int // at each view.redraw, how many output files were on disk
+	var dir string
+	r.onCall = func(id string) {
+		if id != "view.redraw" {
+			return
+		}
+		files, _ := filepath.Glob(filepath.Join(dir, "w.lab", "out", "*", "*"))
+		mu.Lock()
+		kept = append(kept, len(files))
+		mu.Unlock()
+	}
+	text := "```fake\nprint\n```\n"
+	dir = filepath.Dir(note(t, c, "w.lab.md", text, "print"))
+	redraws := func() []int { mu.Lock(); defer mu.Unlock(); return slices.Clone(kept) }
+
+	c.Command("run")
+	if s := settled(t, c); !strings.Contains(s, "ran 1 cell") {
+		t.Fatalf("status %q", s)
+	}
+	if got := redraws(); !slices.Equal(got, []int{1}) {
+		t.Fatalf("after r, view.redraw with %v output files on disk; want once, with the cell's one", got)
+	}
+	c.Command("all")
+	if s := settled(t, c); !strings.Contains(s, "ran 1 cell") {
+		t.Fatalf("status %q", s)
+	}
+	if got := redraws(); !slices.Equal(got, []int{1, 1, 1}) {
+		t.Fatalf("after a, view.redraw with %v output files on disk; want twice more: the cell kept, then the prune", got)
 	}
 }

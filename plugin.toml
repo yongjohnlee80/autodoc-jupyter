@@ -7,7 +7,7 @@ title    = "Jupyter"
 kind     = "dialog"
 protocol = 9
 command  = ["./bin/autodoc-jupyter"]
-calls    = ["file.open_path"]   # import opens the lab note it writes
+calls    = ["file.open_path", "view.redraw"]   # import opens the lab note it writes; a run's outputs are drawn
 
 [dialog]
 modal      = false              # a card: the editor keeps the keys
