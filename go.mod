@@ -4,7 +4,7 @@ go 1.26.9
 
 require (
 	github.com/go-zeromq/zmq4 v0.17.0
-	github.com/yongjohnlee80/autodoc v0.2.1-0.20261020022443-42fc4c66d57f
+	github.com/yongjohnlee80/autodoc v0.2.1-0.20261020044207-beeb7bb6e93b
 	github.com/yongjohnlee80/golib v0.7.16
 )
 
