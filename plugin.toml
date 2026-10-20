@@ -1,0 +1,62 @@
+# Jupyter, as an AutoDoc plugin (AutoDoc's ADR 1792457255): a card that runs a lab note's cells
+# (*.lab.md, its fences in the kernel's language) in a Jupyter kernel, keeps their outputs beside the
+# note, and opens an .ipynb as a lab note. AutoDoc's Plugins › Add from a git URL… clones this
+# repository, asks before it runs anything, then runs [install] build here and starts `command`.
+name     = "jupyter"
+title    = "Jupyter"
+kind     = "dialog"
+protocol = 9
+command  = ["./bin/autodoc-jupyter"]
+calls    = ["file.open_path"]   # import opens the lab note it writes
+
+[dialog]
+modal      = false              # a card: the editor keeps the keys
+placements = ["right"]
+esc        = "hide"             # the kernels live on while the card is hidden
+
+[feed]
+document = true                 # the open note: its cells, the cursor and the selection
+
+[table]
+title = "DataFrame"
+
+[open]
+extensions = [".ipynb"]         # an .ipynb opened anywhere comes here, and opens as a lab note
+command    = "import"
+
+[[commands]]
+id    = "run"
+title = "Run cell or selection"
+key   = "r"
+
+[[commands]]
+id    = "all"
+title = "Run all cells"
+key   = "a"
+
+[[commands]]
+id    = "interrupt"
+title = "Interrupt kernel"
+key   = "x"
+
+[[commands]]
+id    = "restart"
+title = "Restart kernel"
+key   = "s"
+
+[[commands]]
+id    = "kernel"
+title = "Choose kernel…"
+key   = "k"
+
+[[commands]]
+id    = "import"
+title = "Open an .ipynb as a lab note"
+
+[[commands]]
+id    = "export"
+title = "Export to .ipynb"
+key   = "e"
+
+[install]
+build = ["go", "build", "-trimpath", "-o", "bin/autodoc-jupyter", "."]
