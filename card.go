@@ -331,6 +331,7 @@ func (c *labCard) run(all bool) {
 					c.say("keeping the outputs: " + err.Error())
 					return
 				}
+				c.redrawNote()
 			}
 			if len(r.Tables) > 0 {
 				c.sendTable(r.Tables[len(r.Tables)-1])
@@ -345,6 +346,7 @@ func (c *labCard) run(all bool) {
 				c.say("removing outputs no cell has: " + err.Error())
 				return
 			}
+			c.redrawNote()
 		}
 		c.say(fmt.Sprintf("ran %d %s, %s", len(jobs), plural(len(jobs), "cell"), time.Now().Format("15:04:05")))
 	}()
@@ -563,6 +565,18 @@ func (c *labCard) importNotebook(p string) {
 	c.mu.Unlock()
 	if ok, err := peer.Call("file.open_path", labPath); !ok {
 		c.say(fmt.Sprintf("opening %s: %v", filepath.Base(labPath), err))
+	}
+}
+
+// redrawNote has AutoDoc draw the note's Rendered view again: the outputs beside it changed, which no
+// edit of its text says. An AutoDoc without view.redraw answers that it has none, and the outputs
+// show once the note is drawn again.
+func (c *labCard) redrawNote() {
+	c.mu.Lock()
+	peer := c.peer
+	c.mu.Unlock()
+	if peer != nil {
+		_, _ = peer.Call("view.redraw")
 	}
 }
 
