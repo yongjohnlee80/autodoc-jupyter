@@ -81,9 +81,12 @@ func Import(p string) (labPath string, err error) {
 	if nb.Format != 4 {
 		return "", fmt.Errorf("ipynb: %s is nbformat %d; this reads 4", filepath.Base(p), nb.Format)
 	}
-	lang := strings.ToLower(nb.Metadata.Kernelspec.Language)
+	// the fence's language, read as every reader of the note reads a fence's (its first word,
+	// lower-cased), so the key written here is the key the note's own parse gives: "Wolfram Language"
+	// is a wolfram fence
+	lang := lab.FenceLang(nb.Metadata.Kernelspec.Language)
 	if lang == "" {
-		lang = strings.ToLower(nb.Metadata.LanguageInfo.Name)
+		lang = lab.FenceLang(nb.Metadata.LanguageInfo.Name)
 	}
 	if lang == "" {
 		lang = "python"

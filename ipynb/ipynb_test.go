@@ -186,3 +186,43 @@ func TestExportReadsALabNoteOnly(t *testing.T) {
 		t.Error("a plain note was exported")
 	}
 }
+
+// A kernelspec's language of more than one word is a fence of its first word, and the outputs are
+// keyed as the written note's own parse keys that fence: AutoDoc finds them, and an export, under the
+// same kernelspec, gives them back. (Lector's review of #1, r2.)
+func TestAMultiWordLanguageRoundTrips(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "wl.ipynb")
+	src := `{"cells": [{"cell_type": "code", "execution_count": 1, "metadata": {}, "outputs": [{"output_type": "stream", "name": "stdout", "text": "2\n"}], "source": "1 + 1"}], "metadata": {"kernelspec": {"name": "wolframlanguage14", "display_name": "Wolfram Language 14", "language": "Wolfram Language"}}, "nbformat": 4, "nbformat_minor": 5}`
+	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	labPath, err := Import(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(labPath)
+	if !strings.Contains(string(data), "```wolfram\n1 + 1\n```") {
+		t.Fatalf("the fence:\n%s", data)
+	}
+	cs := cells.Read(string(data)).Cells("Wolfram Language")
+	if len(cs) != 1 {
+		t.Fatalf("cells %+v", cs)
+	}
+	dir := filepath.Dir(labPath)
+	got := lab.Outputs(os.DirFS(dir), lab.OutDir(labPath), cs[0].Key())
+	if len(got) != 1 {
+		t.Fatalf("the cell's outputs under its parsed key: %v", got)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Export(labPath, Kernel{Name: "wolframlanguage14", DisplayName: "Wolfram Language 14", Language: "Wolfram Language"}); err != nil {
+		t.Fatal(err)
+	}
+	var nb notebook
+	out, _ := os.ReadFile(p)
+	if err := json.Unmarshal(out, &nb); err != nil || len(nb.Cells) != 1 || nb.Cells[0].Type != "code" ||
+		!strings.Contains(string(nb.Cells[0].Outputs), `"2\n"`) {
+		t.Errorf("the export: %s (%v)", out, err)
+	}
+}
