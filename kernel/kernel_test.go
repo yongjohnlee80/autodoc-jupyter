@@ -1,4 +1,4 @@
-package kernel
+package kernel_test
 
 import (
 	"bytes"
@@ -12,19 +12,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yongjohnlee80/autodoc-jupyter/internal/fakekernel"
+	. "github.com/yongjohnlee80/autodoc-jupyter/kernel"
 )
 
 // A message survives its wire frames, identities and buffers too; a part changed after signing is
 // refused; an empty key signs nothing, as Jupyter's does.
 func TestAMessageIsSignedAndChecked(t *testing.T) {
-	s := signer{key: []byte("k")}
-	m := Message{Identities: [][]byte{[]byte("id")}, Header: newHeader("s", "stream"), Parent: newHeader("s", "execute_request"),
+	s := Codec{Key: []byte("k")}
+	m := Message{Identities: [][]byte{[]byte("id")}, Header: NewHeader("s", "stream"), Parent: NewHeader("s", "execute_request"),
 		Metadata: map[string]any{"a": "b"}, Content: json.RawMessage(`{"text":"1\n"}`), Buffers: [][]byte{[]byte("buf")}}
-	frames, err := s.encode(m)
+	frames, err := s.Encode(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.decode(frames)
+	got, err := s.Decode(frames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,17 +37,17 @@ func TestAMessageIsSignedAndChecked(t *testing.T) {
 	}
 	tampered := slices.Clone(frames)
 	tampered[len(tampered)-2] = []byte(`{"text":"2\n"}`)
-	if _, err := s.decode(tampered); !errors.Is(err, ErrSignature) {
+	if _, err := s.Decode(tampered); !errors.Is(err, ErrSignature) {
 		t.Errorf("a changed content: %v, want ErrSignature", err)
 	}
-	if _, err := (signer{key: []byte("other")}).decode(frames); !errors.Is(err, ErrSignature) {
+	if _, err := (Codec{Key: []byte("other")}).Decode(frames); !errors.Is(err, ErrSignature) {
 		t.Errorf("another key: %v, want ErrSignature", err)
 	}
-	unsigned, _ := signer{}.encode(m)
+	unsigned, _ := Codec{}.Encode(m)
 	if len(unsigned[2]) != 0 {
 		t.Errorf("an empty key signed: %q", unsigned[2])
 	}
-	if _, err := s.decode([][]byte{[]byte("no delimiter")}); err == nil {
+	if _, err := s.Decode([][]byte{[]byte("no delimiter")}); err == nil {
 		t.Error("frames with no delimiter were read")
 	}
 }
@@ -88,7 +91,7 @@ func TestSpecsAreReadFromJupytersFolders(t *testing.T) {
 	if py.Language != "python" || py.DisplayName != "Python 3" || py.Dir != filepath.Join(first, "kernels", "py") {
 		t.Errorf("py: %+v", py)
 	}
-	if got := py.argv("/c.json"); !slices.Equal(got, []string{"python3", "-m", "ipykernel_launcher", "-f", "/c.json", "--dir=" + py.Dir}) {
+	if got := ArgvOf(py, "/c.json"); !slices.Equal(got, []string{"python3", "-m", "ipykernel_launcher", "-f", "/c.json", "--dir=" + py.Dir}) {
 		t.Errorf("argv %q", got)
 	}
 	if byName["ir"].InterruptMode != "message" || byName["ir"].Language != "r" {
@@ -112,7 +115,7 @@ func TestAKernelRunsCode(t *testing.T) {
 	if len(out) != 1 || out[0].Header.MsgType != "display_data" {
 		t.Errorf("png: %+v", out)
 	}
-	if info, err := os.Stat(c.cur().connFile); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(ConnFileOf(c)); err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("the connection file: %v %v; want it readable by the user alone", info, err)
 	}
 }
@@ -166,13 +169,13 @@ func TestRestartLosesTheKernelsState(t *testing.T) {
 	if out, _ := run(t, c, "get"); len(out) != 1 || !strings.Contains(string(out[0].Content), `"text":"1\n"`) {
 		t.Fatalf("get before the restart: %+v", out)
 	}
-	before := c.cur().cmd.Process.Pid
+	before := PidOf(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := c.Restart(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if c.cur().cmd.Process.Pid == before {
+	if PidOf(c) == before {
 		t.Error("the restart kept the process")
 	}
 	if out, r := run(t, c, "get"); r.Status != "error" || len(out) != 1 || !strings.Contains(string(out[0].Content), "NameError") {
@@ -183,17 +186,17 @@ func TestRestartLosesTheKernelsState(t *testing.T) {
 // Shutdown ends the process and removes the connection file; a later request is ErrClosed.
 func TestShutdownStopsTheKernel(t *testing.T) {
 	c := startFake(t, "")
-	s := c.cur()
+	exited, connFile := ExitedOf(c), ConnFileOf(c)
 	c.Shutdown()
 	select {
-	case <-s.exited:
+	case <-exited:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the process is still running")
 	}
 	if c.Alive() {
 		t.Error("Alive after Shutdown")
 	}
-	if _, err := os.Stat(s.connFile); !os.IsNotExist(err) {
+	if _, err := os.Stat(connFile); !os.IsNotExist(err) {
 		t.Errorf("the connection file is still there: %v", err)
 	}
 	if _, err := c.Execute(context.Background(), "print", false, nil); !errors.Is(err, ErrClosed) {
@@ -208,7 +211,7 @@ func TestShutdownStopsTheKernel(t *testing.T) {
 func TestAKernelThatExitsSaysWhy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := Start(ctx, fakeSpec(t, "fake-kernel-dies", ""), t.TempDir(), t.TempDir())
+	_, err := Start(ctx, fakeSpec(t, fakekernel.Dies), t.TempDir(), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "No module named 'ipykernel'") {
 		t.Fatalf("Start: %v; want the kernel's own reason", err)
 	}
