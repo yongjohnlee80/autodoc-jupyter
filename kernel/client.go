@@ -231,8 +231,9 @@ func startSession(ctx context.Context, spec Spec, connDir, workDir string) (*ses
 	}
 	s.up = err == nil
 	if err != nil {
+		err = s.why(spec, err) // before stop, whose kill would read as the kernel's own exit
 		s.stop()
-		return nil, s.why(spec, err)
+		return nil, err
 	}
 	return s, nil
 }
