@@ -451,3 +451,35 @@ func TestRunAllKeepsAnotherLanguagesOutputs(t *testing.T) {
 		t.Errorf("the julia cell's outputs were pruned: %v", err)
 	}
 }
+
+// A note is sent as AutoDoc sends it: its path in its workspace, and the workspace's root. The kernel
+// runs in the note's folder on disk and the outputs are kept beside it there. A host that sends no
+// root is refused with why, never run in a folder the plugin guessed. (Johno's first test: the
+// kernel started in "lab/" relative to the plugin's own folder.)
+func TestANoteIsFoundOnDiskThroughItsWorkspacesRoot(t *testing.T) {
+	c, _ := card(t, fakekernel.Signal)
+	root := t.TempDir()
+	text := "```fake\nprint\n```\n"
+	if err := os.MkdirAll(filepath.Join(root, "lab"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "lab", "w.lab.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.Document(plugin.Document{Path: "lab/w.lab.md", Workspace: "kb", Root: root, Text: text, CursorByte: 1})
+	c.Command("run")
+	if s := settled(t, c); !strings.Contains(s, "ran 1 cell") {
+		t.Fatalf("status %q", s)
+	}
+	if got := outputsOf(t, filepath.Join(root, "lab", "w.lab.md"), "print"); got["01.txt"] != "1\n" {
+		t.Errorf("the outputs under the workspace: %q", got)
+	}
+	c.Document(plugin.Document{Path: "lab/w.lab.md", Workspace: "kb", Text: text, CursorByte: 1})
+	c.Command("run")
+	c.mu.Lock()
+	status := c.status
+	c.mu.Unlock()
+	if !strings.Contains(status, "update AutoDoc") {
+		t.Errorf("a document without its root: %q", status)
+	}
+}
