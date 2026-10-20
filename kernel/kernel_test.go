@@ -264,12 +264,22 @@ func TestARealIPyKernel(t *testing.T) {
 	if out, r := run(t, c, "x = 41\nprint(x + 1)"); r.Status != "ok" || len(out) != 1 || !strings.Contains(string(out[0].Content), `42\n`) {
 		t.Fatalf("print: %+v %+v", out, r)
 	}
+	// the interrupt goes once the cell says it runs: ipykernel ignores a SIGINT while it is idle, so
+	// one sent before the cell starts (a loaded machine) would be lost and the sleep run out
 	done := make(chan Reply, 1)
+	sleeping := make(chan struct{})
 	go func() {
-		r, _ := c.Execute(ctx, "import time\ntime.sleep(30)", false, nil)
+		var once sync.Once
+		r, _ := c.Execute(ctx, "import time\nprint('sleeping', flush=True)\ntime.sleep(30)", false, func(Message) {
+			once.Do(func() { close(sleeping) })
+		})
 		done <- r
 	}()
-	time.Sleep(time.Second)
+	select {
+	case <-sleeping:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cell never said it runs")
+	}
 	if err := c.Interrupt(); err != nil {
 		t.Fatal(err)
 	}
