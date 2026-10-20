@@ -20,7 +20,7 @@ runs again, and `git diff` of the note never fills with output.
 
 ## Use
 
-It needs an AutoDoc that speaks plugin protocol 9: lab notes and the `.ipynb` open hook.
+It needs AutoDoc v0.2.1 or later: plugin protocol 9 (lab notes and the `.ipynb` open hook), a document's workspace root (to find the note on disk), and `view.redraw` (to draw a run's outputs at once). An older one refuses the plugin: it does not speak protocol 9.
 
 - **Add it:** Plugins › Add from a git URL…, with this repository's URL. AutoDoc builds it with Go.
 - **Kernels:** any Jupyter kernel installed where Jupyter keeps them. Python's comes with ipykernel
