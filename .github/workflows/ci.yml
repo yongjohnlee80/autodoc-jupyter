@@ -1,0 +1,30 @@
+# Every push and pull request: vet, a build, and the tests under the race detector. The kernel's and
+# the card's cells run a fake kernel written in Go; with ipykernel, pandas and matplotlib installed
+# here, the real-kernel cells run too (they skip, saying why, where Python's kernel is missing).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: a Python kernel
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-ipykernel python3-pandas python3-matplotlib
+      - name: vet
+        run: go vet ./...
+      - name: build
+        run: go build -trimpath -o bin/autodoc-jupyter .
+      - name: test
+        run: go test -race -count=1 ./...
