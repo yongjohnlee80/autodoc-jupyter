@@ -20,7 +20,7 @@ runs again, and `git diff` of the note never fills with output.
 
 ## Use
 
-It needs AutoDoc v0.2.1 or later: plugin protocol 9 (lab notes and the `.ipynb` open hook), a document's workspace root (to find the note on disk), and `view.redraw` (to draw a run's outputs at once). An older one refuses the plugin: it does not speak protocol 9.
+It needs AutoDoc v0.3.1 or later: plugin protocol 11 (the editor's right-click menu rows, on top of protocol 9's lab notes and `.ipynb` open hook), a document's workspace root (to find the note on disk), and `view.redraw` (to draw a run's outputs at once). An older one refuses the plugin: it does not speak protocol 11.
 
 - **Add it:** Plugins › Add from a git URL…, with this repository's URL. AutoDoc builds it with Go.
 - **Kernels:** any Jupyter kernel installed where Jupyter keeps them. Python's comes with ipykernel
@@ -35,8 +35,15 @@ It needs AutoDoc v0.2.1 or later: plugin protocol 9 (lab notes and the `.ipynb` 
   | `x` | interrupt the run |
   | `s` | restart the kernel: its variables are gone |
   | `k` | choose the note's kernel |
+  | `c` | clear the outputs of the cell under the cursor |
   | `e` | export the note as an `.ipynb` beside it (never over one) |
 
+- **`:jpt`** (or `:jupyter`) on AutoDoc's command line runs the same commands: `:jpt` alone runs
+  the cell, and `:jpt all`, `:jpt clear`, `:jpt interrupt`, `:jpt restart`, `:jpt kernel` and
+  `:jpt export` the rest, completing as you type. `:jpt clear all` clears every cell's outputs and
+  the note's outputs folder. During a run, clearing does nothing: the run's outputs would come back.
+- **The right-click menu:** in a `.lab.md` note, the editor's right-click menu has **Jupyter ›
+  Run cell, Run all, Clear outputs**.
 - **`.ipynb` files:** opening one in AutoDoc hands it to this plugin, which writes `nb.lab.md`
   beside `nb.ipynb` (never over an existing one) with its outputs, and opens that.
 
