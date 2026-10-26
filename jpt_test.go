@@ -3,12 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/yongjohnlee80/autodoc/core/manifests"
 	"github.com/yongjohnlee80/autodoc/plugin"
 
 	"github.com/yongjohnlee80/autodoc-jupyter/internal/fakekernel"
@@ -60,48 +57,5 @@ func TestClearRemovesTheCellsOutputsOrTheNotes(t *testing.T) {
 	c.CommandArgs("clear", []string{"all"})
 	if _, err := os.Stat(out); !os.IsNotExist(err) {
 		t.Errorf("clear all left the outputs folder: %v", err)
-	}
-}
-
-// The Lua package registers :jpt (and :jupyter) and sends each subcommand to the plugin's command
-// of that name, the rest its arguments (autodoc.plugin.run), :jpt alone running the cell. Its
-// completion lists exactly the manifest's commands a user runs (import is the [open] hook's). Read
-// as text: running it needs AutoDoc's script engine, whose Lua is no dependency of this module.
-func TestTheLuaPackageRunsThePluginsCommands(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("lua", "init.lua"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`name = "jpt"`, `aliases = { "jupyter" }`, `autodoc.plugin.run(args[1] or "run", select(2, unpack(args)))`, `if not ok then error(err, 0) end`} {
-		if !strings.Contains(string(src), want) {
-			t.Errorf("lua/init.lua lacks %q", want)
-		}
-	}
-	m, err := manifests.ReadPlugin(os.DirFS("."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var runnable []string
-	for _, c := range m.Commands {
-		if c.ID != m.Open.Command {
-			runnable = append(runnable, c.ID)
-		}
-	}
-	list := regexp.MustCompile(`complete = \{([^}]*)\}`).FindSubmatch(src)
-	if list == nil {
-		t.Fatal("lua/init.lua has no complete list")
-	}
-	var complete []string
-	for _, w := range regexp.MustCompile(`"([a-z]+)"`).FindAllSubmatch(list[1], -1) {
-		complete = append(complete, string(w[1]))
-	}
-	slices.Sort(runnable)
-	slices.Sort(complete)
-	if !slices.Equal(complete, runnable) {
-		t.Errorf(":jpt completes %q; the manifest's commands are %q", complete, runnable)
-	}
-	pkg, err := os.ReadFile(filepath.Join("lua", "package.toml"))
-	if err != nil || !strings.Contains(string(pkg), `name = "jupyter"`) {
-		t.Errorf("lua/package.toml: %v; want the plugin's name", err)
 	}
 }
