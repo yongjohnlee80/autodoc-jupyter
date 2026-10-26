@@ -160,6 +160,8 @@ func (c *labCard) CommandArgs(id string, args []string) {
 		c.choose()
 	case "export":
 		c.export()
+	case "clear":
+		c.clear(len(args) > 0 && args[0] == "all")
 	case "import":
 		if len(args) == 0 {
 			c.say("open an .ipynb with File › Open file…: it comes here and opens as a lab note")
@@ -170,7 +172,7 @@ func (c *labCard) CommandArgs(id string, args []string) {
 }
 
 // keys are the commands' letters while the card has the keys, as the manifest gives them.
-var keys = map[string]string{"r": "run", "a": "all", "x": "interrupt", "s": "restart", "k": "kernel", "e": "export"}
+var keys = map[string]string{"r": "run", "a": "all", "x": "interrupt", "s": "restart", "k": "kernel", "e": "export", "c": "clear"}
 
 func (c *labCard) Key(k plugin.Key) {
 	c.mu.Lock()
@@ -350,6 +352,52 @@ func (c *labCard) run(all bool) {
 		}
 		c.say(fmt.Sprintf("ran %d %s, %s", len(jobs), plural(len(jobs), "cell"), time.Now().Format("15:04:05")))
 	}()
+}
+
+// clear removes kept outputs: the cell's under the cursor, or with all every cell's of the note and
+// the outputs folder itself. Not during a run, whose outputs would come back under it.
+func (c *labCard) clear(all bool) {
+	c.mu.Lock()
+	if c.running {
+		c.status = "a run is in progress: x interrupts it"
+		c.redrawLocked()
+		c.mu.Unlock()
+		return
+	}
+	d, file, n, spec, err := c.noteLocked()
+	if err != nil {
+		c.status = err.Error()
+		c.redrawLocked()
+		c.mu.Unlock()
+		return
+	}
+	outDir := filepath.Join(filepath.Dir(file), filepath.FromSlash(lab.OutDir(file)))
+	var what string
+	if all {
+		err = outputs.Prune(outDir, nil)
+		if err == nil {
+			_ = os.Remove(outDir) // empty now, unless a run's hidden folder is in it
+		}
+		what = "the note's outputs"
+	} else {
+		cell, ok := n.At(spec.Language, d.CursorByte)
+		if !ok {
+			c.status = "the cursor is in no " + spec.Language + " cell"
+			c.redrawLocked()
+			c.mu.Unlock()
+			return
+		}
+		err = outputs.Commit(filepath.Join(outDir, cell.Key()), nil)
+		what = "the cell's outputs"
+	}
+	if err != nil {
+		c.status = "clearing " + what + ": " + err.Error()
+	} else {
+		c.status = "cleared " + what
+	}
+	c.redrawLocked()
+	c.mu.Unlock()
+	c.redrawNote()
 }
 
 // selected is the document's selection, when one is not empty: run on its own.

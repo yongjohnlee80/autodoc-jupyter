@@ -318,9 +318,20 @@ func TestTheManifestIsOneAutoDocAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Protocol != 9 || !slices.Equal(m.Open.Extensions, []string{".ipynb"}) || m.Open.Command != "import" ||
+	if m.Protocol != 11 || !slices.Equal(m.Open.Extensions, []string{".ipynb"}) || m.Open.Command != "import" ||
 		!slices.Contains(m.Declares(), "opens .ipynb files") || m.Modal() {
 		t.Errorf("manifest %+v; declares %q", m, m.Declares())
+	}
+	// the right-click menu on a lab note: Jupyter › Run cell, Run all, Clear outputs
+	var rows []string
+	for _, row := range m.Menus {
+		rows = append(rows, row.Command)
+		if row.Where != "editor" || !slices.Equal(row.Files, []string{"*.lab.md"}) {
+			t.Errorf("menu row %+v: want the editor's, for *.lab.md", row)
+		}
+	}
+	if !slices.Equal(rows, []string{"run", "all", "clear"}) {
+		t.Errorf("menu rows %q; want run, all, clear", rows)
 	}
 	for _, cmd := range m.Commands {
 		if cmd.Key != "" && keys[cmd.Key] != cmd.ID {

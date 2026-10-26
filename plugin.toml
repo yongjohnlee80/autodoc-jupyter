@@ -5,7 +5,7 @@
 name     = "jupyter"
 title    = "Jupyter"
 kind     = "dialog"
-protocol = 9
+protocol = 11
 command  = ["./bin/autodoc-jupyter"]
 calls    = ["file.open_path", "view.redraw"]   # import opens the lab note it writes; a run's outputs are drawn
 
@@ -49,6 +49,11 @@ title = "Choose kernel…"
 key   = "k"
 
 [[commands]]
+id    = "clear"
+title = "Clear the cell's outputs"
+key   = "c"
+
+[[commands]]
 id    = "import"
 title = "Open an .ipynb as a lab note"
 
@@ -56,6 +61,25 @@ title = "Open an .ipynb as a lab note"
 id    = "export"
 title = "Export to .ipynb"
 key   = "e"
+
+# The editor's right-click menu on a lab note: Jupyter › Run cell, Run all, Clear outputs.
+[[menu]]
+command = "run"
+where   = "editor"
+files   = ["*.lab.md"]
+title   = "&Run cell"
+
+[[menu]]
+command = "all"
+where   = "editor"
+files   = ["*.lab.md"]
+title   = "Run &all"
+
+[[menu]]
+command = "clear"
+where   = "editor"
+files   = ["*.lab.md"]
+title   = "&Clear outputs"
 
 [install]
 build = ["go", "build", "-trimpath", "-o", "bin/autodoc-jupyter", "."]

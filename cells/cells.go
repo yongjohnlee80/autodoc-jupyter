@@ -44,8 +44,8 @@ func Read(text string) Note {
 			switch {
 			case c.Kind == markdown.KindFrontmatter:
 				n.Kernel, n.Body = kernelOf(c.Literal), c.Span.End
-			case c.Kind == markdown.KindCodeBlock && c.Fence != 0:
-				n.fences = append(n.fences, Cell{Lang: lab.FenceLang(string(c.Info)), Code: string(c.Literal), Start: c.Span.Start, End: c.Span.End})
+			case c.Kind == markdown.KindCodeBlock && c.Fence() != 0:
+				n.fences = append(n.fences, Cell{Lang: lab.FenceLang(string(c.Info())), Code: string(c.Literal), Start: c.Span.Start, End: c.Span.End})
 			default:
 				walk(c) // a fence in a list item or a quote is a cell too, as the export finds it
 			}

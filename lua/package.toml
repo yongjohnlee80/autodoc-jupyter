@@ -1,0 +1,5 @@
+# The Jupyter plugin's Lua package for AutoDoc: AutoDoc loads lua/package.toml and lua/init.lua of an
+# installed plugin, under the plugin's name.
+name = "jupyter"
+version = "1.0.0"
+description = ":jpt runs the Jupyter plugin's commands"
