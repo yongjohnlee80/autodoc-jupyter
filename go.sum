@@ -4,10 +4,10 @@ github.com/go-zeromq/goczmq/v4 v4.2.2 h1:HAJN+i+3NW55ijMJJhk7oWxHKXgAuSBkoFfvr8b
 github.com/go-zeromq/goczmq/v4 v4.2.2/go.mod h1:Sm/lxrfxP/Oxqs0tnHD6WAhwkWrx+S+1MRrKzcxoaYE=
 github.com/go-zeromq/zmq4 v0.17.0 h1:r12/XdqPeRbuaF4C3QZJeWCt7a5vpJbslDH1rTXF+Kc=
 github.com/go-zeromq/zmq4 v0.17.0/go.mod h1:EQxjJD92qKnrsVMzAnx62giD6uJIPi1dMGZ781iCDtY=
-github.com/yongjohnlee80/autodoc v0.3.1-0.20261026084234-886af3ba3b52 h1:JnuIYbptU14KBMxAiG773vnk9xN4KTwl6BrUtfI/tYE=
-github.com/yongjohnlee80/autodoc v0.3.1-0.20261026084234-886af3ba3b52/go.mod h1:f6K/5H5IzlxNLcB8G9H4LuVF3clBkGldd5L/reZQWAo=
-github.com/yongjohnlee80/golib v0.8.8 h1:sqRhHvkJxmgWDRfoKShXR4+BWHf4WJKLAdrMlCc921M=
-github.com/yongjohnlee80/golib v0.8.8/go.mod h1:MxdtUttYXjsAnET0k31FgJAM7JU6LR1RHg2f/vJ+HTU=
+github.com/yongjohnlee80/autodoc v0.3.1 h1:OM9WgQrOPlFW4dUWLh98jPGeTHkstw1E5qpNO/yy8jA=
+github.com/yongjohnlee80/autodoc v0.3.1/go.mod h1:COoLK2oFALLOPWW4rKN3EuOvHFj2OPvB5xP7wdpMzeM=
+github.com/yongjohnlee80/golib v0.8.10 h1:dCJigDELH5YTWrjR9PNTXUE29/TZh51igpWSST6ORyA=
+github.com/yongjohnlee80/golib v0.8.10/go.mod h1:MxdtUttYXjsAnET0k31FgJAM7JU6LR1RHg2f/vJ+HTU=
 github.com/yuin/gopher-lua v1.1.2 h1:yF/FjE3hD65tBbt0VXLE13HWS9h34fdzJmrWRXwobGA=
 github.com/yuin/gopher-lua v1.1.2/go.mod h1:7aRmXIWl37SqRf0koeyylBEzJ+aPt8A+mmkQ4f1ntR8=
 golang.org/x/sync v0.22.0 h1:SZjpbeLmrCk4xhRSZFNZW5gFUeCeFgjekvI/+gfScek=
